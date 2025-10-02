@@ -18,30 +18,38 @@ pub fn build(b: *std.Build) void {
     // allow the zphys module to import the math module via @import("math")
     physics_mod.addImport("math", math_mod);
 
-    const exe_mod = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "math", .module = math_mod },
-                .{ .name = "zphys", .module = physics_mod },
-            },
-        });
+    const raylib_dep = b.dependency("raylib_zig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const raylib = raylib_dep.module("raylib");
+    const raylib_artifact = raylib_dep.artifact("raylib");
 
-
-    const exe = b.addExecutable(.{
-        .name = "zphys",
-        .root_module = exe_mod
+    // create a module that will be used to build the example executable
+    const example_mod = b.createModule(.{
+        .root_source_file = b.path("example/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "math", .module = math_mod },
+            .{ .name = "zphys", .module = physics_mod },
+            .{ .name = "raylib", .module = raylib },
+        },
     });
 
-    b.installArtifact(exe);
+    const example_exe = b.addExecutable(.{
+        .name = "zphys_example",
+        .root_module = example_mod,
+    });
+    example_exe.linkLibrary(raylib_artifact);
+    b.installArtifact(example_exe);
 
-    const run_step = b.step("run", "Run the app");
+    const example_step = b.step("example", "Run the example");
 
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
+    const example_cmd = b.addRunArtifact(example_exe);
+    example_step.dependOn(&example_cmd.step);
 
-    run_cmd.step.dependOn(b.getInstallStep());
+    example_cmd.step.dependOn(b.getInstallStep());
 
     const test_step = b.step("test", "Run tests");
 
@@ -66,11 +74,16 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_math_tests.addArgs(args);
         run_physics_tests.addArgs(args);
-        run_cmd.addArgs(args);
+        example_cmd.addArgs(args);
     }
+
+    const run_examples_step = b.step("run", "Run examples");
+    run_examples_step.dependOn(&example_cmd.step);
+    run_examples_step.dependOn(b.getInstallStep());
+
     const check = b.addExecutable(.{
         .name = "Check",
-        .root_module = exe_mod,
+        .root_module = example_mod,
     });
 
     // This is a test of making zls work in tests.

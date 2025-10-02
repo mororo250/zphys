@@ -1,7 +1,7 @@
 .{
-    .name = .zig_template,
+    .name = .zphys,
     .version = "0.0.0",
-    .fingerprint = 0xd5505ffe614657ba,
+    .fingerprint = 0x6f4ad74ebe4f077f,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
     },

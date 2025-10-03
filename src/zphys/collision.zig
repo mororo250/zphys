@@ -5,35 +5,153 @@ const Body = @import("body.zig").Body;
 pub const Contact = struct {
     a: u32,
     b: u32,
-    normal: math.Vec3, // points from A to B
+    normal: math.Vec3,
     point: math.Vec3, // contact point (approx)
     penetration: f32,
     friction: f32,
     restitution: f32,
 };
- 
+
+pub fn generateContacts(bodies: []const Body, out_items: []Contact, out_len: *usize) !void {
+
+    // Todo: Add BroadPhase collision check in here
+    var i: usize = 0;
+    while (i < bodies.len) : (i += 1) {
+        var j: usize = i + 1;
+        while (j < bodies.len) : (j += 1) {
+            const a = &bodies[i];
+            const b = &bodies[j];
+
+            // Skip static-static
+            if (a.mass == 0 and b.mass == 0) continue;
+
+            switch (a.shape) {
+                .Sphere => |_| {
+                    switch (b.shape) {
+                        .Sphere => |_| try collideSphereSphere(@intCast(i), a, @intCast(j), b, out_items, out_len),
+                        .Box => |_| try collideSphereBox(@intCast(i), a, @intCast(j), b, out_items, out_len),
+                        else => {},
+                    }
+                },
+                .Box => |_| {
+                    switch (b.shape) {
+                        .Sphere => |_| {
+                            // sphere-box expects sphere as A, box as B; swap roles
+                            const prev_len = out_len.*;
+                            try collideSphereBox(@intCast(j), b, @intCast(i), a, out_items, out_len);
+                            // If a contact was added, remap to keep ordering A=i (box), B=j (sphere)
+                            if (out_len.* > prev_len) {
+                                var c_ref = &out_items[out_len.* - 1];
+                                // ensure normal points from A(i) to B(j)
+                                c_ref.normal = c_ref.normal.negate();
+                                // set indices to match (i -> j)
+                                c_ref.a = @intCast(i);
+                                c_ref.b = @intCast(j);
+                            }
+                        },
+                        .Box => |_| try collideBoxBox(@intCast(i), a, @intCast(j), b, out_items, out_len),
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+}
+
+pub fn solveVelocity(bodies: []Body, contacts: []const Contact, iterations: u32, dt: f32) void {
+    const baumgarte: f32 = 0.3;
+    const slop: f32 = 0.003;
+
+    var it: u32 = 0;
+    while (it < iterations) : (it += 1) {
+        for (contacts) |c| {
+            const a = &bodies[c.a];
+            const b = &bodies[c.b];
+
+            const invMassA = a.inverseMass;
+            const invMassB = b.inverseMass;
+            const invMassSum = invMassA + invMassB;
+            if (invMassSum == 0) continue;
+
+            const n = c.normal.normalize(0);
+
+            // Relative velocity at contact (linear only for now)
+            const rv = b.velocity.sub(&a.velocity);
+            const velAlongNormal = rv.dot(&n);
+
+            // Penetration slop and early exit for separating contacts
+            const pen = @max(c.penetration - slop, 0.0);
+            if (velAlongNormal > 0 and pen <= 0) continue;
+
+            // Restitution only on closing velocity
+            const restitution = if (velAlongNormal < -0.5) c.restitution else 0.0;
+
+            // Baumgarte positional bias as velocity term
+            const biasVel = if (dt > 0) (baumgarte * pen / dt) else 0.0;
+
+            // Normal impulse (include restitution + bias)
+            var jn = (-(1.0 + restitution) * velAlongNormal - biasVel) / invMassSum;
+            if (jn < 0) jn = 0;
+
+            if (jn > 0) {
+                const impulseN = n.mulScalar(jn);
+                a.velocity = a.velocity.sub(&impulseN.mulScalar(invMassA));
+                b.velocity = b.velocity.add(&impulseN.mulScalar(invMassB));
+            }
+
+            // Friction (Coulomb, clamped by mu * |jn|)
+            const rv2 = b.velocity.sub(&a.velocity);
+            var tangent = rv2.sub(&n.mulScalar(rv2.dot(&n)));
+            const t_len2 = tangent.len2();
+            if (t_len2 > 1e-12) {
+                tangent = tangent.mulScalar(1.0 / std.math.sqrt(t_len2));
+                const jt = -(rv2.dot(&tangent)) / invMassSum;
+                const mu = c.friction;
+
+                const maxFriction = mu * jn;
+                var jt_clamped = jt;
+                if (jt_clamped > maxFriction) jt_clamped = maxFriction;
+                if (jt_clamped < -maxFriction) jt_clamped = -maxFriction;
+
+                const impulseT = tangent.mulScalar(jt_clamped);
+                a.velocity = a.velocity.sub(&impulseT.mulScalar(invMassA));
+                b.velocity = b.velocity.add(&impulseT.mulScalar(invMassB));
+            }
+        }
+    }
+}
+
+pub fn solvePosition(bodies: []Body, contacts: []const Contact) void {
+    const percent: f32 = 0.2; // gentler correction to reduce jitter
+    const slop: f32 = 0.005;
+
+    for (contacts) |c| {
+        const a = &bodies[c.a];
+        const b = &bodies[c.b];
+
+        const invMassA = a.inverseMass;
+        const invMassB = b.inverseMass;
+        const invMassSum = invMassA + invMassB;
+        if (invMassSum == 0) continue;
+
+        const correction_mag = percent * @max(c.penetration - slop, 0.0) / invMassSum;
+        const correction = c.normal.normalize(0).mulScalar(correction_mag);
+
+        a.position = a.position.sub(&correction.mulScalar(invMassA));
+        b.position = b.position.add(&correction.mulScalar(invMassB));
+    }
+}
+
+
 inline fn tryAppend(out_items: []Contact, out_len: *usize, c: Contact) !void {
     if (out_len.* >= out_items.len) return error.OutOfContacts;
     out_items[out_len.*] = c;
     out_len.* += 1;
 }
- 
-inline fn max(a: f32, b: f32) f32 {
-    return if (a > b) a else b;
-}
-inline fn abs(x: f32) f32 {
-    return if (x >= 0) x else -x;
-}
+
 inline fn signf(x: f32) f32 {
     return if (x >= 0) 1.0 else -1.0;
-}
-
-fn quatRotate(v: math.Vec3, q: math.Quat) math.Vec3 {
-    return v.mulQuat(&q);
-}
-fn quatInverseRotate(v: math.Vec3, q: math.Quat) math.Vec3 {
-    const qi = q.inverse();
-    return v.mulQuat(&qi);
 }
 
 fn getBoxAxes(center: math.Vec3, q: math.Quat, halfExtents: math.Vec3) struct {
@@ -41,17 +159,17 @@ fn getBoxAxes(center: math.Vec3, q: math.Quat, halfExtents: math.Vec3) struct {
     axes: [3]math.Vec3,
     he: math.Vec3,
 } {
-    const ax = quatRotate(math.vec3(1, 0, 0), q);
-    const ay = quatRotate(math.vec3(0, 1, 0), q);
-    const az = quatRotate(math.vec3(0, 0, 1), q);
+    const ax = math.vec3(1, 0, 0).mulQuat(&q);
+    const ay = math.vec3(0, 1, 0).mulQuat(&q);
+    const az = math.vec3(0, 0, 1).mulQuat(&q);
     return .{ .c = center, .axes = .{ ax, ay, az }, .he = halfExtents };
 }
 
 fn supportBox(center: math.Vec3, q: math.Quat, he: math.Vec3, dir: math.Vec3) math.Vec3 {
     // World axes of the box
-    const ax = quatRotate(math.vec3(1, 0, 0), q);
-    const ay = quatRotate(math.vec3(0, 1, 0), q);
-    const az = quatRotate(math.vec3(0, 0, 1), q);
+    const ax = math.vec3(1, 0, 0).mulQuat(&q);
+    const ay = math.vec3(0, 1, 0).mulQuat(&q);
+    const az = math.vec3(0, 0, 1).mulQuat(&q);
 
     const sx = signf(ax.dot(&dir));
     const sy = signf(ay.dot(&dir));
@@ -76,14 +194,14 @@ fn supportSphere(center: math.Vec3, radius: f32, dir: math.Vec3) math.Vec3 {
 
 fn closestPointOnOBB(point: math.Vec3, center: math.Vec3, q: math.Quat, he: math.Vec3) math.Vec3 {
     // Transform point to box local space
-    const p_local = quatInverseRotate(point.sub(&center), q);
+    const p_local = point.sub(&center).mulQuat(&q.inverse());
     const clamped = math.vec3(
         std.math.clamp(p_local.x(), -he.x(), he.x()),
         std.math.clamp(p_local.y(), -he.y(), he.y()),
         std.math.clamp(p_local.z(), -he.z(), he.z()),
     );
     // Back to world
-    return center.add(&quatRotate(clamped, q));
+    return center.add(&clamped.mulQuat(&q));
 }
 
 pub fn collideSphereSphere(a_id: u32, a: *const Body, b_id: u32, b: *const Body, out_items: []Contact, out_len: *usize) !void {
@@ -108,8 +226,8 @@ pub fn collideSphereSphere(a_id: u32, a: *const Body, b_id: u32, b: *const Body,
     // Approx contact point as point on surface of A along normal
     const point = a.position.add(&normal.mulScalar(sa.radius - penetration * 0.5));
 
-    const friction = std.math.sqrt(max(a.friction, 0) * max(b.friction, 0));
-    const restitution = max(a.restitution, b.restitution);
+    const friction = std.math.sqrt(@max(a.friction, 0) * @max(b.friction, 0));
+    const restitution = @max(a.restitution, b.restitution);
 
     try tryAppend(out_items, out_len, .{
         .a = a_id,
@@ -144,8 +262,8 @@ pub fn collideSphereBox(a_id: u32, a: *const Body, b_id: u32, b: *const Body, ou
     const penetration = sp.radius - d;
     const point = closest;
 
-    const friction = std.math.sqrt(max(a.friction, 0) * max(b.friction, 0));
-    const restitution = max(a.restitution, b.restitution);
+    const friction = std.math.sqrt(@max(a.friction, 0) * @max(b.friction, 0));
+    const restitution = @max(a.restitution, b.restitution);
 
     try tryAppend(out_items, out_len, .{
         .a = a_id,
@@ -324,7 +442,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
     inline for (0..3) |i| {
         inline for (0..3) |j| {
             R[i][j] = A.axes[i].dot(&B.axes[j]);
-            AbsR[i][j] = abs(R[i][j]) + 1e-6; // add epsilon to account for parallelism
+            AbsR[i][j] = @abs(R[i][j]) + 1e-6; // add epsilon to account for parallelism
         }
     }
 
@@ -340,7 +458,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
     {
         const ra0 = A.he.x();
         const rb0 = B.he.x() * AbsR[0][0] + B.he.y() * AbsR[0][1] + B.he.z() * AbsR[0][2];
-        const d0 = abs(t.x());
+        const d0 = @abs(t.x());
         if (d0 > ra0 + rb0) return null;
         const overlap0 = (ra0 + rb0) - d0;
         if (overlap0 < min_overlap) {
@@ -350,7 +468,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
 
         const ra1 = A.he.y();
         const rb1 = B.he.x() * AbsR[1][0] + B.he.y() * AbsR[1][1] + B.he.z() * AbsR[1][2];
-        const d1 = abs(t.y());
+        const d1 = @abs(t.y());
         if (d1 > ra1 + rb1) return null;
         const overlap1 = (ra1 + rb1) - d1;
         if (overlap1 < min_overlap) {
@@ -360,7 +478,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
 
         const ra2 = A.he.z();
         const rb2 = B.he.x() * AbsR[2][0] + B.he.y() * AbsR[2][1] + B.he.z() * AbsR[2][2];
-        const d2 = abs(t.z());
+        const d2 = @abs(t.z());
         if (d2 > ra2 + rb2) return null;
         const overlap2 = (ra2 + rb2) - d2;
         if (overlap2 < min_overlap) {
@@ -373,7 +491,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
     {
         const ra0 = A.he.x() * AbsR[0][0] + A.he.y() * AbsR[1][0] + A.he.z() * AbsR[2][0];
         const rb0 = B.he.x();
-        const d0 = abs(t.x() * R[0][0] + t.y() * R[1][0] + t.z() * R[2][0]);
+        const d0 = @abs(t.x() * R[0][0] + t.y() * R[1][0] + t.z() * R[2][0]);
         if (d0 > ra0 + rb0) return null;
         const overlap0 = (ra0 + rb0) - d0;
         if (overlap0 < min_overlap) {
@@ -383,7 +501,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
 
         const ra1 = A.he.x() * AbsR[0][1] + A.he.y() * AbsR[1][1] + A.he.z() * AbsR[2][1];
         const rb1 = B.he.y();
-        const d1 = abs(t.x() * R[0][1] + t.y() * R[1][1] + t.z() * R[2][1]);
+        const d1 = @abs(t.x() * R[0][1] + t.y() * R[1][1] + t.z() * R[2][1]);
         if (d1 > ra1 + rb1) return null;
         const overlap1 = (ra1 + rb1) - d1;
         if (overlap1 < min_overlap) {
@@ -393,7 +511,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
 
         const ra2 = A.he.x() * AbsR[0][2] + A.he.y() * AbsR[1][2] + A.he.z() * AbsR[2][2];
         const rb2 = B.he.z();
-        const d2 = abs(t.x() * R[0][2] + t.y() * R[1][2] + t.z() * R[2][2]);
+        const d2 = @abs(t.x() * R[0][2] + t.y() * R[1][2] + t.z() * R[2][2]);
         if (d2 > ra2 + rb2) return null;
         const overlap2 = (ra2 + rb2) - d2;
         if (overlap2 < min_overlap) {
@@ -421,7 +539,7 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
             const ip1 = (i + 1) % 3;
             const ip2 = (i + 2) % 3;
 
-            const t_term = abs(t_arr[ip2] * R[ip1][j] - t_arr[ip1] * R[ip2][j]);
+            const t_term = @abs(t_arr[ip2] * R[ip1][j] - t_arr[ip1] * R[ip2][j]);
             if (t_term > ra + rb) return null;
 
             const overlap = (ra + rb) - t_term;
@@ -453,8 +571,8 @@ pub fn collideBoxBox(a_id: u32, a: *const Body, b_id: u32, b: *const Body, out_i
     // SAT to get contact normal + penetration depth
     const sat_res = satBoxBoxContact(a.position, a.orientation, bxA.halfExtends, b.position, b.orientation, bxB.halfExtends) orelse return;
 
-    const friction = std.math.sqrt(max(a.friction, 0) * max(b.friction, 0));
-    const restitution = max(a.restitution, b.restitution);
+    const friction = std.math.sqrt(@max(a.friction, 0) * @max(b.friction, 0));
+    const restitution = @max(a.restitution, b.restitution);
 
     const point = a.position.add(&b.position).mulScalar(0.5);
     try tryAppend(out_items, out_len, .{
@@ -468,131 +586,3 @@ pub fn collideBoxBox(a_id: u32, a: *const Body, b_id: u32, b: *const Body, out_i
     });
 }
 
-pub fn generateContacts(bodies: []const Body, out_items: []Contact, out_len: *usize) !void {
-    var i: usize = 0;
-    while (i < bodies.len) : (i += 1) {
-        var j: usize = i + 1;
-        while (j < bodies.len) : (j += 1) {
-            const a = &bodies[i];
-            const b = &bodies[j];
-
-            // Skip static-static
-            if (a.mass == 0 and b.mass == 0) continue;
-
-            switch (a.shape) {
-                .Sphere => |_| {
-                    switch (b.shape) {
-                        .Sphere => |_| try collideSphereSphere(@intCast(i), a, @intCast(j), b, out_items, out_len),
-                        .Box => |_| try collideSphereBox(@intCast(i), a, @intCast(j), b, out_items, out_len),
-                        else => {},
-                    }
-                },
-                .Box => |_| {
-                    switch (b.shape) {
-                        .Sphere => |_| {
-                            // sphere-box expects sphere as A, box as B; swap roles
-                            const prev_len = out_len.*;
-                            try collideSphereBox(@intCast(j), b, @intCast(i), a, out_items, out_len);
-                            // If a contact was added, remap to keep ordering A=i (box), B=j (sphere)
-                            if (out_len.* > prev_len) {
-                                var c_ref = &out_items[out_len.* - 1];
-                                // ensure normal points from A(i) to B(j)
-                                c_ref.normal = c_ref.normal.negate();
-                                // set indices to match (i -> j)
-                                c_ref.a = @intCast(i);
-                                c_ref.b = @intCast(j);
-                            }
-                        },
-                        .Box => |_| try collideBoxBox(@intCast(i), a, @intCast(j), b, out_items, out_len),
-                        else => {},
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-}
-
-pub fn solveVelocity(bodies: []Body, contacts: []const Contact, iterations: u32, dt: f32) void {
-    const baumgarte: f32 = 0.3;
-    const slop: f32 = 0.003;
-
-    var it: u32 = 0;
-    while (it < iterations) : (it += 1) {
-        for (contacts) |c| {
-            const a = &bodies[c.a];
-            const b = &bodies[c.b];
-
-            const invMassA = a.inverseMass;
-            const invMassB = b.inverseMass;
-            const invMassSum = invMassA + invMassB;
-            if (invMassSum == 0) continue;
-
-            const n = c.normal.normalize(0);
-
-            // Relative velocity at contact (linear only for now)
-            const rv = b.velocity.sub(&a.velocity);
-            const velAlongNormal = rv.dot(&n);
-
-            // Penetration slop and early exit for separating contacts
-            const pen = max(c.penetration - slop, 0.0);
-            if (velAlongNormal > 0 and pen <= 0) continue;
-
-            // Restitution only on closing velocity
-            const restitution = if (velAlongNormal < -0.5) c.restitution else 0.0;
-
-            // Baumgarte positional bias as velocity term
-            const biasVel = if (dt > 0) (baumgarte * pen / dt) else 0.0;
-
-            // Normal impulse (include restitution + bias)
-            var jn = (-(1.0 + restitution) * velAlongNormal - biasVel) / invMassSum;
-            if (jn < 0) jn = 0;
-
-            if (jn > 0) {
-                const impulseN = n.mulScalar(jn);
-                a.velocity = a.velocity.sub(&impulseN.mulScalar(invMassA));
-                b.velocity = b.velocity.add(&impulseN.mulScalar(invMassB));
-            }
-
-            // Friction (Coulomb, clamped by mu * |jn|)
-            const rv2 = b.velocity.sub(&a.velocity);
-            var tangent = rv2.sub(&n.mulScalar(rv2.dot(&n)));
-            const t_len2 = tangent.len2();
-            if (t_len2 > 1e-12) {
-                tangent = tangent.mulScalar(1.0 / std.math.sqrt(t_len2));
-                const jt = -(rv2.dot(&tangent)) / invMassSum;
-                const mu = c.friction;
-
-                const maxFriction = mu * jn;
-                var jt_clamped = jt;
-                if (jt_clamped > maxFriction) jt_clamped = maxFriction;
-                if (jt_clamped < -maxFriction) jt_clamped = -maxFriction;
-
-                const impulseT = tangent.mulScalar(jt_clamped);
-                a.velocity = a.velocity.sub(&impulseT.mulScalar(invMassA));
-                b.velocity = b.velocity.add(&impulseT.mulScalar(invMassB));
-            }
-        }
-    }
-}
-
-pub fn solvePosition(bodies: []Body, contacts: []const Contact) void {
-    const percent: f32 = 0.2; // gentler correction to reduce jitter
-    const slop: f32 = 0.005;
-
-    for (contacts) |c| {
-        const a = &bodies[c.a];
-        const b = &bodies[c.b];
-
-        const invMassA = a.inverseMass;
-        const invMassB = b.inverseMass;
-        const invMassSum = invMassA + invMassB;
-        if (invMassSum == 0) continue;
-
-        const correction_mag = percent * max(c.penetration - slop, 0.0) / invMassSum;
-        const correction = c.normal.normalize(0).mulScalar(correction_mag);
-
-        a.position = a.position.sub(&correction.mulScalar(invMassA));
-        b.position = b.position.add(&correction.mulScalar(invMassB));
-    }
-}

@@ -45,14 +45,13 @@ pub fn main() !void {
     while (i < 3) : (i += 1) {
         var d = zphys.BodyDef.default();
         d.shape = zphys.shape.newSphere(0.5);
-        d.position = math.vec3(0, 1 + @as(f32, @floatFromInt(i)) * 1.1, 0);
+        d.position = math.vec3(0, 3 + @as(f32, @floatFromInt(i)) * 1.1, 0);
         d.mass = 1.0;
         d.friction = 0.4;
         d.restitution = 0.6;
         _ = try world.createBody(d);
     }
 
-    // Two dynamic boxes to exercise box-box (GJK + SAT) and box-sphere
     {
         var b1 = zphys.BodyDef.default();
         b1.shape = zphys.shape.newBox(math.vec3(0.5, 0.5, 0.5));
@@ -74,10 +73,32 @@ pub fn main() !void {
     rl.disableCursor();
     rl.setTargetFPS(60);
 
+    const uvTex = try rl.loadTexture("example/resources/uvImageTexture.png");
+    defer rl.unloadTexture(uvTex);
+
+    var sky_tex: ?rl.Texture = null;
+    defer if (sky_tex) |t| rl.unloadTexture(t);
+    if (rl.loadImage("example/resources/sky.hdr")) |img| {
+        if (rl.loadTextureFromImage(img)) |tex| {
+            sky_tex = tex;
+        } else |_| {}
+        rl.unloadImage(img);
+    } else |_| {}
+
+    const albedo_index: usize = @intFromEnum(rl.MaterialMapIndex.albedo);
+    const cube_mesh = rl.genMeshCube(1.0, 1.0, 1.0);
+    var cube_model = try rl.loadModelFromMesh(cube_mesh);
+    defer rl.unloadModel(cube_model);
+    cube_model.materials[0].maps[albedo_index].texture = uvTex;
+
+    const sphere_mesh = rl.genMeshSphere(1.0, 24, 24);
+    var sphere_model = try rl.loadModelFromMesh(sphere_mesh);
+    defer rl.unloadModel(sphere_model);
+    sphere_model.materials[0].maps[albedo_index].texture = uvTex;
+
     while (!rl.windowShouldClose()) {
         camera.update(.free);
 
-        // Physics step
         const dt = rl.getFrameTime();
         try world.step(dt, 4);
 
@@ -90,6 +111,26 @@ pub fn main() !void {
         rl.clearBackground(.ray_white);
 
         {
+            if (sky_tex) |tex| {
+                const src = rl.Rectangle.init(
+                    0,
+                    0,
+                    @as(f32, @floatFromInt(tex.width)),
+                    @as(f32, @floatFromInt(tex.height)),
+                );
+                const dst = rl.Rectangle.init(
+                    0,
+                    0,
+                    @as(f32, @floatFromInt(screenWidth)),
+                    @as(f32, @floatFromInt(screenHeight)),
+                );
+                rl.drawTexturePro(tex, src, dst, rl.Vector2.init(0, 0), 0.0, .white);
+            } else {
+                rl.drawRectangleGradientV(0, 0, screenWidth, screenHeight, .sky_blue, .ray_white);
+            }
+        }
+
+        {
             camera.begin();
             defer camera.end();
 
@@ -98,12 +139,36 @@ pub fn main() !void {
                     .Box => |bx| {
                         const s = bx.halfExtends;
                         const pos = rl.Vector3.init(body.position.x(), body.position.y(), body.position.z());
-                        rl.drawCube(pos, s.x() * 2, s.y() * 2, s.z() * 2, .red);
-                        rl.drawCubeWires(pos, s.x() * 2, s.y() * 2, s.z() * 2, .maroon);
+                        const is_dynamic = body.inverseMass > 0;
+                        if (is_dynamic) {
+                            const q = body.orientation.v;
+                            const qw: f32 = q.w();
+                            const angle_rad: f32 = 2.0 * std.math.acos(qw);
+                            const sden: f32 = std.math.sqrt(@max(0.0, 1.0 - qw * qw));
+                            const axis = if (sden < 0.0001) rl.Vector3.init(0, 1, 0) else rl.Vector3.init(q.x() / sden, q.y() / sden, q.z() / sden);
+                            const angle_deg: f32 = angle_rad * 180.0 / std.math.pi;
+                            const scale = rl.Vector3.init(s.x() * 2, s.y() * 2, s.z() * 2);
+                            rl.drawModelEx(cube_model, pos, axis, angle_deg, scale, .white);
+                        } else {
+                            rl.drawCube(pos, s.x() * 2, s.y() * 2, s.z() * 2, .red);
+                            rl.drawCubeWires(pos, s.x() * 2, s.y() * 2, s.z() * 2, .maroon);
+                        }
                     },
                     .Sphere => |sp| {
                         const pos = rl.Vector3.init(body.position.x(), body.position.y(), body.position.z());
-                        rl.drawSphere(pos, sp.radius, .blue);
+                        const is_dynamic = body.inverseMass > 0;
+                        if (is_dynamic) {
+                            const q = body.orientation.v;
+                            const qw: f32 = q.w();
+                            const angle_rad: f32 = 2.0 * std.math.acos(qw);
+                            const sden: f32 = std.math.sqrt(@max(0.0, 1.0 - qw * qw));
+                            const axis = if (sden < 0.0001) rl.Vector3.init(0, 1, 0) else rl.Vector3.init(q.x() / sden, q.y() / sden, q.z() / sden);
+                            const angle_deg: f32 = angle_rad * 180.0 / std.math.pi;
+                            const scale = rl.Vector3.init(sp.radius, sp.radius, sp.radius);
+                            rl.drawModelEx(sphere_model, pos, axis, angle_deg, scale, .white);
+                        } else {
+                            rl.drawSphere(pos, sp.radius, .blue);
+                        }
                     },
                     .Line => |ln| {
                         const p1 = rl.Vector3.init(
@@ -120,6 +185,8 @@ pub fn main() !void {
                     },
                 }
             }
+
+            
 
             rl.drawGrid(10, 1);
         }

@@ -35,11 +35,11 @@ pub const World = struct {
         return id;
     }
 
-    pub fn step(self: *World, timestep: f32, substep: u32) !void {
+    pub fn step(self: *World, timestep: f32, substep: u16) !void {
         std.debug.assert(substep > 0);
-        const dt: f32 = timestep / substep;
+        const dt: f32 = timestep / @as(f32, @floatFromInt(substep));
 
-        var i = 0;
+        var i: u16 = 0;
         while (i < substep) : (i += 1) {
             IntegrateVelocities(self, dt);
 
@@ -47,12 +47,12 @@ pub const World = struct {
             try collision.generateContacts(self.bodies.items, self.temp.outItems(), self.temp.outLenPtr());
             collision.solveVelocity(self.bodies.items, self.temp.slice(), 12, dt);
 
-            IntegratePositions(self, dt);
+            try IntegratePositions(self, dt);
        }
     }
 
     fn IntegrateVelocities(self: *World, dt: f32) void {
-        var j = 0;
+        var j: u16 = 0;
         while (j < self.bodies.items.len) : (j += 1) {
             var b = &self.bodies.items[j];
             if (b.mass == 0) continue; // static
@@ -61,7 +61,7 @@ pub const World = struct {
         }
     }
 
-    fn IntegratePositions(self: *World, dt: f32) void {
+    fn IntegratePositions(self: *World, dt: f32) !void {
         for (0..self.bodies.items.len) |j| {
             var b = &self.bodies.items[j];
             if (b.mass == 0) continue;
@@ -69,7 +69,7 @@ pub const World = struct {
             b.position = b.position.add(&vdt);
         }
 
-        var j = 0;
+        var j: u8 = 0;
         while (j < 10) : (j += 1) {
             self.temp.clear();
             try collision.generateContacts(self.bodies.items, self.temp.outItems(), self.temp.outLenPtr());
@@ -84,7 +84,7 @@ pub const WorldTemp = struct {
 
     pub fn init() WorldTemp {
         return .{
-            .contacts_buf = undefined, // will be written before read
+            .contacts_buf = undefined,
             .contacts_len = 0,
         };
     }
@@ -94,7 +94,6 @@ pub const WorldTemp = struct {
     }
 
     pub fn outItems(self: *WorldTemp) []collision.Contact {
-        // Full-capacity writable slice for contact emission
         return self.contacts_buf[0..self.contacts_buf.len];
     }
 
@@ -103,7 +102,6 @@ pub const WorldTemp = struct {
     }
 
     pub fn slice(self: *WorldTemp) []const collision.Contact {
-        // Current valid contacts slice
         return self.contacts_buf[0..self.contacts_len];
     }
 };

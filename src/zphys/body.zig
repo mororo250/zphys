@@ -14,6 +14,7 @@ pub const BodyDef = struct {
     mass: f32,
     centerOfMass: math.Vec3,
     friction: f32,
+    restitution: f32,
 
     shape: Shape,
 
@@ -31,6 +32,7 @@ pub const BodyDef = struct {
             .mass = 0.0,
             .centerOfMass = math.vec3(0, 0, 0),
             .friction = 0.5,
+            .restitution = 0.5,
             // default placeholder shape (unit sphere)
             .shape = shape.newSphere(1.0),
         };
@@ -49,6 +51,7 @@ pub const Body = struct {
     inverseMass: f32,
     centerOfMass: math.Vec3,
     friction: f32,
+    restitution: f32,
 
     shape: Shape,
 
@@ -64,6 +67,7 @@ pub const Body = struct {
             .inverseMass = inv,
             .centerOfMass = def.centerOfMass,
             .friction = def.friction,
+            .restitution = def.restitution,
             .shape = def.shape,
         };
     }

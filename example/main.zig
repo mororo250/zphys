@@ -37,6 +37,8 @@ pub fn main() !void {
     ground.shape = zphys.shape.newBox(math.vec3(5, 0.5, 5));
     ground.position = math.vec3(0, -0.5, 0);
     ground.mass = 0.0;
+    ground.friction = 0.9;
+    ground.restitution = 0.2;
     _ = try world.createBody(ground);
 
     var i: i32 = 0;
@@ -45,7 +47,28 @@ pub fn main() !void {
         d.shape = zphys.shape.newSphere(0.5);
         d.position = math.vec3(0, 1 + @as(f32, @floatFromInt(i)) * 1.1, 0);
         d.mass = 1.0;
+        d.friction = 0.4;
+        d.restitution = 0.6;
         _ = try world.createBody(d);
+    }
+
+    // Two dynamic boxes to exercise box-box (GJK + SAT) and box-sphere
+    {
+        var b1 = zphys.BodyDef.default();
+        b1.shape = zphys.shape.newBox(math.vec3(0.5, 0.5, 0.5));
+        b1.position = math.vec3(1.0, 4.0, 0.0);
+        b1.mass = 1.0;
+        b1.friction = 0.6;
+        b1.restitution = 0.3;
+        _ = try world.createBody(b1);
+
+        var b2 = zphys.BodyDef.default();
+        b2.shape = zphys.shape.newBox(math.vec3(0.6, 0.4, 0.6));
+        b2.position = math.vec3(1.8, 6.0, 0.1);
+        b2.mass = 1.0;
+        b2.friction = 0.6;
+        b2.restitution = 0.3;
+        _ = try world.createBody(b2);
     }
 
     rl.disableCursor();
@@ -53,6 +76,10 @@ pub fn main() !void {
 
     while (!rl.windowShouldClose()) {
         camera.update(.free);
+
+        // Physics step
+        const dt = rl.getFrameTime();
+        try world.step(dt, 4);
 
         if (rl.isKeyPressed(.z)) {
             camera.target = .init(0, 0, 0);

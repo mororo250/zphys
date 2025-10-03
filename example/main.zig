@@ -11,7 +11,7 @@ pub fn main() !void {
     std.debug.print("math: a + b = {any}\n", .{ c });
     std.debug.print("math: dot(a, b) = {d}\n", .{ a.dot(&b) });
 
-    const v: zphys.Vec2 = zphys.vec2(10, 20);
+    const v: math.Vec2 = math.vec2(10, 20);
     std.debug.print("zphys: v = {any}, len = {d}\n", .{ v, v.len() });
 
     std.debug.print("Example complete.\n", .{});
@@ -20,9 +20,8 @@ pub fn main() !void {
     const screenHeight = 450;
 
     rl.initWindow(screenWidth, screenHeight, "raylib [core] example - 3d camera free");
-    defer rl.closeWindow(); // Close window and OpenGL context
+    defer rl.closeWindow();
 
-    // Define the camera to look into our 3d world
     var camera = rl.Camera{
         .position = .init(10, 10, 10),
         .target = .init(0, 0, 0),
@@ -31,25 +30,33 @@ pub fn main() !void {
         .projection = .perspective,
     };
 
-    const cubePosition = rl.Vector3.init(0, 0, 0);
+    var world = zphys.World.init(std.heap.page_allocator);
+    defer world.deinit();
 
-    rl.disableCursor(); // Limit cursor to relative movement inside the window
-    rl.setTargetFPS(60); // Set our game to run at 60 frames-per-second
-    //--------------------------------------------------------------------------------
+    var ground = zphys.BodyDef.default();
+    ground.shape = zphys.shape.newBox(math.vec3(5, 0.5, 5));
+    ground.position = math.vec3(0, -0.5, 0);
+    ground.mass = 0.0;
+    _ = try world.createBody(ground);
 
-    // Main game loop
-    while (!rl.windowShouldClose()) { // Detect window close button or ESC key
-        // Update
-        //-----------------------------------------------------------------------------
+    var i: i32 = 0;
+    while (i < 3) : (i += 1) {
+        var d = zphys.BodyDef.default();
+        d.shape = zphys.shape.newSphere(0.5);
+        d.position = math.vec3(0, 1 + @as(f32, @floatFromInt(i)) * 1.1, 0);
+        d.mass = 1.0;
+        _ = try world.createBody(d);
+    }
+
+    rl.disableCursor();
+    rl.setTargetFPS(60);
+
+    while (!rl.windowShouldClose()) {
         camera.update(.free);
 
         if (rl.isKeyPressed(.z)) {
             camera.target = .init(0, 0, 0);
         }
-        //-----------------------------------------------------------------------------
-
-        // Draw
-        //-----------------------------------------------------------------------------
         rl.beginDrawing();
         defer rl.endDrawing();
 
@@ -59,8 +66,33 @@ pub fn main() !void {
             camera.begin();
             defer camera.end();
 
-            rl.drawCube(cubePosition, 2, 2, 2, .red);
-            rl.drawCubeWires(cubePosition, 2, 2, 2, .maroon);
+            for (world.bodies.items) |body| {
+                switch (body.shape) {
+                    .Box => |bx| {
+                        const s = bx.halfExtends;
+                        const pos = rl.Vector3.init(body.position.x(), body.position.y(), body.position.z());
+                        rl.drawCube(pos, s.x() * 2, s.y() * 2, s.z() * 2, .red);
+                        rl.drawCubeWires(pos, s.x() * 2, s.y() * 2, s.z() * 2, .maroon);
+                    },
+                    .Sphere => |sp| {
+                        const pos = rl.Vector3.init(body.position.x(), body.position.y(), body.position.z());
+                        rl.drawSphere(pos, sp.radius, .blue);
+                    },
+                    .Line => |ln| {
+                        const p1 = rl.Vector3.init(
+                            body.position.x() + ln.p1.x(),
+                            body.position.y() + ln.p1.y(),
+                            body.position.z() + ln.p1.z(),
+                        );
+                        const p2 = rl.Vector3.init(
+                            body.position.x() + ln.p2.x(),
+                            body.position.y() + ln.p2.y(),
+                            body.position.z() + ln.p2.z(),
+                        );
+                        rl.drawLine3D(p1, p2, .black);
+                    },
+                }
+            }
 
             rl.drawGrid(10, 1);
         }

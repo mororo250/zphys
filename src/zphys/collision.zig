@@ -13,7 +13,6 @@ pub const Contact = struct {
 };
 
 pub fn generateContacts(bodies: []const Body, out_items: []Contact, out_len: *usize) !void {
-
     // Todo: Add BroadPhase collision check in here
     var i: usize = 0;
     while (i < bodies.len) : (i += 1) {
@@ -123,7 +122,7 @@ pub fn solveVelocity(bodies: []Body, contacts: []const Contact, iterations: u32,
 }
 
 pub fn solvePosition(bodies: []Body, contacts: []const Contact) void {
-    const percent: f32 = 0.2; // gentler correction to reduce jitter
+    const percent: f32 = 0.2;
     const slop: f32 = 0.005;
 
     for (contacts) |c| {
@@ -143,13 +142,6 @@ pub fn solvePosition(bodies: []Body, contacts: []const Contact) void {
     }
 }
 
-
-inline fn tryAppend(out_items: []Contact, out_len: *usize, c: Contact) !void {
-    if (out_len.* >= out_items.len) return error.OutOfContacts;
-    out_items[out_len.*] = c;
-    out_len.* += 1;
-}
-
 inline fn signf(x: f32) f32 {
     return if (x >= 0) 1.0 else -1.0;
 }
@@ -163,6 +155,32 @@ fn getBoxAxes(center: math.Vec3, q: math.Quat, halfExtents: math.Vec3) struct {
     const ay = math.vec3(0, 1, 0).mulQuat(&q);
     const az = math.vec3(0, 0, 1).mulQuat(&q);
     return .{ .c = center, .axes = .{ ax, ay, az }, .he = halfExtents };
+}
+
+pub fn collideBoxBox(a_id: u32, a: *const Body, b_id: u32, b: *const Body, out_items: []Contact, out_len: *usize) !void {
+    const bxA = a.shape.Box;
+    const bxB = b.shape.Box;
+
+    // GJK for detection
+    const intersects = gjkBoxesIntersect(a.position, a.orientation, bxA.halfExtends, b.position, b.orientation, bxB.halfExtends);
+    if (!intersects) return;
+
+    // SAT to get contact normal + penetration depth
+    const sat_res = satBoxBoxContact(a.position, a.orientation, bxA.halfExtends, b.position, b.orientation, bxB.halfExtends) orelse return;
+
+    const friction = std.math.sqrt(@max(a.friction, 0) * @max(b.friction, 0));
+    const restitution = @max(a.restitution, b.restitution);
+
+    const point = a.position.add(&b.position).mulScalar(0.5);
+    try tryAppend(out_items, out_len, .{
+        .a = a_id,
+        .b = b_id,
+        .normal = sat_res.normal,
+        .point = point,
+        .penetration = sat_res.penetration,
+        .friction = friction,
+        .restitution = restitution,
+    });
 }
 
 fn supportBox(center: math.Vec3, q: math.Quat, he: math.Vec3, dir: math.Vec3) math.Vec3 {
@@ -193,7 +211,6 @@ fn supportSphere(center: math.Vec3, radius: f32, dir: math.Vec3) math.Vec3 {
 }
 
 fn closestPointOnOBB(point: math.Vec3, center: math.Vec3, q: math.Quat, he: math.Vec3) math.Vec3 {
-    // Transform point to box local space
     const p_local = point.sub(&center).mulQuat(&q.inverse());
     const clamped = math.vec3(
         std.math.clamp(p_local.x(), -he.x(), he.x()),
@@ -277,7 +294,6 @@ pub fn collideSphereBox(a_id: u32, a: *const Body, b_id: u32, b: *const Body, ou
 }
 
 // ------------- OBB vs OBB using GJK for detection, SAT for contact details -------------
-
 fn gjkBoxesIntersect(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.Vec3, b_q: math.Quat, b_he: math.Vec3) bool {
     // Minkowski support function: S(dir) = supportA(dir) - supportB(-dir)
     const support = struct {
@@ -560,29 +576,8 @@ fn satBoxBoxContact(a_c: math.Vec3, a_q: math.Quat, a_he: math.Vec3, b_c: math.V
     return .{ .normal = best_axis_world.normalize(0), .penetration = min_overlap };
 }
 
-pub fn collideBoxBox(a_id: u32, a: *const Body, b_id: u32, b: *const Body, out_items: []Contact, out_len: *usize) !void {
-    const bxA = a.shape.Box;
-    const bxB = b.shape.Box;
-
-    // GJK for detection
-    const intersects = gjkBoxesIntersect(a.position, a.orientation, bxA.halfExtends, b.position, b.orientation, bxB.halfExtends);
-    if (!intersects) return;
-
-    // SAT to get contact normal + penetration depth
-    const sat_res = satBoxBoxContact(a.position, a.orientation, bxA.halfExtends, b.position, b.orientation, bxB.halfExtends) orelse return;
-
-    const friction = std.math.sqrt(@max(a.friction, 0) * @max(b.friction, 0));
-    const restitution = @max(a.restitution, b.restitution);
-
-    const point = a.position.add(&b.position).mulScalar(0.5);
-    try tryAppend(out_items, out_len, .{
-        .a = a_id,
-        .b = b_id,
-        .normal = sat_res.normal,
-        .point = point,
-        .penetration = sat_res.penetration,
-        .friction = friction,
-        .restitution = restitution,
-    });
+inline fn tryAppend(out_items: []Contact, out_len: *usize, c: Contact) !void {
+    if (out_len.* >= out_items.len) return error.OutOfContacts;
+    out_items[out_len.*] = c;
+    out_len.* += 1;
 }
-

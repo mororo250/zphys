@@ -32,25 +32,22 @@ pub const GjkBox = struct {
 
 
 
-// Refactored: now receives two anytype parameters (expected to provide
-//   - field: center: Vec3
-//   - method: support(direction: Vec3) Vec3
-// The provided GjkShapeA and GjkShapeB structs above satisfy this interface.
 pub fn gjkBoxesIntersect(
     shape_a: anytype,
     shape_b: anytype,
 ) bool {
-    // Initial search direction towards B from A
-    var search_direction = shape_b.center.sub(&shape_a.center);
-    if (search_direction.len2() < 1e-8) search_direction = math.vec3(1, 0, 0);
-
     var simplex: [4]math.Vec3 = undefined;
     var simplex_size: usize = 0;
+
+    var search_direction = shape_b.center.sub(&shape_a.center);
+    if (search_direction.len2() < 1e-8) search_direction = math.vec3(1, 0, 0);
 
     // Add first point from Minkowski difference: S(d) = supportA(d) - supportB(-d)
     simplex[0] = shape_a.support(search_direction).sub(&shape_b.support(search_direction.negate()));
     simplex_size = 1;
-    if (simplex[0].dot(&search_direction) <= 0) return false;
+
+    if (simplex[0].dot(&search_direction) <= 0)
+        return false;
     search_direction = simplex[0].negate();
 
     var iteration: usize = 0;

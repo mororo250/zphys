@@ -32,7 +32,7 @@ pub const GjkBox = struct {
 
 
 
-pub fn gjkBoxesIntersect(
+pub fn gjkIntersect(
     shape_a: anytype,
     shape_b: anytype,
 ) bool {

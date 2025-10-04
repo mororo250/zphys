@@ -12,7 +12,7 @@ pub fn collideBoxBox(a_id: u32, body_a: *const Body, b_id: u32, body_b: *const B
     // GJK for detection
     const shape_a = gjk.GjkBox{ .center = body_a.position, .orientation = body_a.orientation, .half_extents = box_a.half_extents };
     const shape_b = gjk.GjkBox{ .center = body_b.position, .orientation = body_b.orientation, .half_extents = box_b.half_extents };
-    const intersects = gjk.gjkBoxesIntersect(shape_a, shape_b);
+    const intersects = gjk.gjkIntersect(shape_a, shape_b);
     if (!intersects) return;
 
     // SAT to get contact normal + penetration depth

@@ -58,11 +58,9 @@ pub fn gjkIntersect(
         simplex[simplex_size] = new_point;
         simplex_size += 1;
 
-        // Handle simplex
         const contains_origin = handleSimplex(&simplex, &simplex_size, &search_direction);
         if (contains_origin) return true;
     }
-    // Fallback
     return false;
 }
 

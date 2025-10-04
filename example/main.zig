@@ -137,7 +137,7 @@ pub fn main() !void {
             for (world.bodies.items) |body| {
                 switch (body.shape) {
                     .Box => |bx| {
-                        const s = bx.halfExtends;
+                        const half_extents = bx.half_extents;
                         const pos = rl.Vector3.init(body.position.x(), body.position.y(), body.position.z());
                         const is_dynamic = body.inverseMass > 0;
                         if (is_dynamic) {
@@ -147,11 +147,11 @@ pub fn main() !void {
                             const sden: f32 = std.math.sqrt(@max(0.0, 1.0 - qw * qw));
                             const axis = if (sden < 0.0001) rl.Vector3.init(0, 1, 0) else rl.Vector3.init(q.x() / sden, q.y() / sden, q.z() / sden);
                             const angle_deg: f32 = angle_rad * 180.0 / std.math.pi;
-                            const scale = rl.Vector3.init(s.x() * 2, s.y() * 2, s.z() * 2);
+                            const scale = rl.Vector3.init(half_extents.x() * 2, half_extents.y() * 2, half_extents.z() * 2);
                             rl.drawModelEx(cube_model, pos, axis, angle_deg, scale, .white);
                         } else {
-                            rl.drawCube(pos, s.x() * 2, s.y() * 2, s.z() * 2, .red);
-                            rl.drawCubeWires(pos, s.x() * 2, s.y() * 2, s.z() * 2, .maroon);
+                            rl.drawCube(pos, half_extents.x() * 2, half_extents.y() * 2, half_extents.z() * 2, .red);
+                            rl.drawCubeWires(pos, half_extents.x() * 2, half_extents.y() * 2, half_extents.z() * 2, .maroon);
                         }
                     },
                     .Sphere => |sp| {
@@ -172,14 +172,14 @@ pub fn main() !void {
                     },
                     .Line => |ln| {
                         const p1 = rl.Vector3.init(
-                            body.position.x() + ln.p1.x(),
-                            body.position.y() + ln.p1.y(),
-                            body.position.z() + ln.p1.z(),
+                            body.position.x() + ln.point_a.x(),
+                            body.position.y() + ln.point_a.y(),
+                            body.position.z() + ln.point_a.z(),
                         );
                         const p2 = rl.Vector3.init(
-                            body.position.x() + ln.p2.x(),
-                            body.position.y() + ln.p2.y(),
-                            body.position.z() + ln.p2.z(),
+                            body.position.x() + ln.point_b.x(),
+                            body.position.y() + ln.point_b.y(),
+                            body.position.z() + ln.point_b.z(),
                         );
                         rl.drawLine3D(p1, p2, .black);
                     },

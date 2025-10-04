@@ -2,9 +2,8 @@
 const math = @import("math");
 const Body = @import("body.zig").Body;
 const BodyDef = @import("body.zig").BodyDef;
-const collision = @import("collision.zig");
+const collision = @import("collision/collision.zig");
 
-const DEFAULT_CONTACT_CAP: usize = 8192;
 
 pub const World = struct {
     allocator: std.mem.Allocator,
@@ -21,11 +20,12 @@ pub const World = struct {
             .allocator = allocator,
             .bodies = .{},
             .gravity = gravity,
-            .temp = WorldTemp.init(),
+            .temp = WorldTemp.init(allocator),
         };
     }
 
     pub fn deinit(self: *World) void {
+        self.temp.deinit();
         self.bodies.deinit(self.allocator);
     }
 
@@ -39,69 +39,72 @@ pub const World = struct {
         std.debug.assert(substep > 0);
         const dt: f32 = timestep / @as(f32, @floatFromInt(substep));
 
-        var i: u16 = 0;
-        while (i < substep) : (i += 1) {
+        var substep_index: u16 = 0;
+        try self.temp.ensureCapacity(self.bodies.items.len);
+        while (substep_index < substep) : (substep_index += 1) {
             IntegrateVelocities(self, dt);
 
             self.temp.clear();
-            try collision.generateContacts(self.bodies.items, self.temp.outItems(), self.temp.outLenPtr());
+            collision.generateContacts(self.bodies.items, &self.temp.contacts);
             collision.solveVelocity(self.bodies.items, self.temp.slice(), 12, dt);
 
-            try IntegratePositions(self, dt);
+            IntegratePositions(self, dt);
        }
     }
 
     fn IntegrateVelocities(self: *World, dt: f32) void {
-        var j: u16 = 0;
-        while (j < self.bodies.items.len) : (j += 1) {
-            var b = &self.bodies.items[j];
-            if (b.mass == 0) continue; // static
-                    const gdt = self.gravity.mulScalar(dt);
-            b.velocity = b.velocity.add(&gdt);
+        var body_index: u16 = 0;
+        while (body_index < self.bodies.items.len) : (body_index += 1) {
+            var body = &self.bodies.items[body_index];
+            if (body.mass == 0) continue; // static
+            const gravity_delta_velocity = self.gravity.mulScalar(dt);
+            body.velocity = body.velocity.add(&gravity_delta_velocity);
         }
     }
 
-    fn IntegratePositions(self: *World, dt: f32) !void {
-        for (0..self.bodies.items.len) |j| {
-            var b = &self.bodies.items[j];
-            if (b.mass == 0) continue;
-            const vdt = b.velocity.mulScalar(dt);
-            b.position = b.position.add(&vdt);
+    fn IntegratePositions(self: *World, dt: f32) void {
+        for (0..self.bodies.items.len) |body_index| {
+            var body = &self.bodies.items[body_index];
+            if (body.mass == 0) continue;
+            const position_delta = body.velocity.mulScalar(dt);
+            body.position = body.position.add(&position_delta);
         }
 
-        var j: u8 = 0;
-        while (j < 10) : (j += 1) {
+        var iteration: u8 = 0;
+        while (iteration < 10) : (iteration += 1) {
             self.temp.clear();
-            try collision.generateContacts(self.bodies.items, self.temp.outItems(), self.temp.outLenPtr());
+            collision.generateContacts(self.bodies.items, &self.temp.contacts);
             collision.solvePosition(self.bodies.items, self.temp.slice());
         }
     }
 };
 
 pub const WorldTemp = struct {
-    contacts_buf: [DEFAULT_CONTACT_CAP]collision.Contact,
-    contacts_len: usize,
+    allocator: std.mem.Allocator,
+    contacts: std.ArrayList(collision.Contact),
 
-    pub fn init() WorldTemp {
+    pub fn init(allocator: std.mem.Allocator) WorldTemp {
         return .{
-            .contacts_buf = undefined,
-            .contacts_len = 0,
+            .allocator = allocator,
+            .contacts = .{},
         };
     }
 
+    pub fn deinit(self: *WorldTemp) void {
+        self.contacts.deinit(self.allocator);
+    }
+
     pub fn clear(self: *WorldTemp) void {
-        self.contacts_len = 0;
+        self.contacts.clearRetainingCapacity();
     }
 
-    pub fn outItems(self: *WorldTemp) []collision.Contact {
-        return self.contacts_buf[0..self.contacts_buf.len];
-    }
-
-    pub fn outLenPtr(self: *WorldTemp) *usize {
-        return &self.contacts_len;
+    pub fn ensureCapacity(self: *WorldTemp, bodies_count: usize) !void {
+        if (bodies_count <= 1) return;
+        const max_pairs = bodies_count * (bodies_count - 1) / 2;
+        try self.contacts.ensureTotalCapacity(self.allocator, max_pairs);
     }
 
     pub fn slice(self: *WorldTemp) []const collision.Contact {
-        return self.contacts_buf[0..self.contacts_len];
+        return self.contacts.items;
     }
 };

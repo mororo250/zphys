@@ -1,5 +1,5 @@
 ﻿const math = @import("math");
-const shape = @import("shape.zig");
+const shape = @import("collision/shape.zig");
 const Shape = shape.Shape;
 
 // Todo: Should I move this into it's own file?
@@ -56,7 +56,7 @@ pub const Body = struct {
     shape: Shape,
 
     pub fn fromDef(def: BodyDef) Body {
-        const inv = if (def.mass == 0) 0 else 1.0 / def.mass;
+        const inverse_mass = if (def.mass == 0) 0 else 1.0 / def.mass;
         return Body{
             .angularVelocity = def.angularVelocity,
             .orientation = def.orientation,
@@ -64,7 +64,7 @@ pub const Body = struct {
             .position = def.position,
             .inertia = def.inertia,
             .mass = def.mass,
-            .inverseMass = inv,
+            .inverseMass = inverse_mass,
             .centerOfMass = def.centerOfMass,
             .friction = def.friction,
             .restitution = def.restitution,

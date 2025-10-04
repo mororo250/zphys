@@ -1,4 +1,4 @@
-﻿const math = @import("math");
+const math = @import("math");
 
 const Box = struct {
     half_extents: math.Vec3
@@ -18,7 +18,6 @@ pub const Shape = union(enum) {
     Sphere: Sphere,
     Line: Line,
 };
-
 
 pub fn newBox(half_extents: math.Vec3) Shape {
     return .{ .Box = .{ .half_extents = half_extents } };

@@ -14,7 +14,8 @@ pub fn collideBoxBox(
     b_id: u32, 
     transform_b: TransformComp, 
     shape_b: Shape,
-    out: *std.ArrayList(contact.ContactManifold)
+    read_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    write_cache: *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
 ) void {
     const box_a = shape_a.Box;
     const box_b = shape_b.Box;
@@ -52,6 +53,17 @@ pub fn collideBoxBox(
     var face_a_contact_points: [max_length]math.Vec3 = undefined;
     var face_b_contact_points: [max_length]math.Vec3 = undefined;
 
+    const key = contact.CacheMainfoldKey{ .body_a = a_id, .body_b = b_id };
+    const result = write_cache.getOrPutAssumeCapacity(key);
+    var manifold = result.value_ptr;
+    
+    // Initialize manifold
+    manifold.normal = penetration_axis.normalize(math.eps_f32);
+    manifold.penetration_depth = epa_result.penetration_depth;
+    manifold.accumulated_impulse = [_]f32{0} ** 4;
+    manifold.accumulated_impulse_tangent1 = [_]f32{0} ** 4;
+    manifold.accumulated_impulse_tangent2 = [_]f32{0} ** 4;
+
     const manifold_size = manifold_between_two_faces.manifoldBetweenTwoFaces(
         face_a.len + face_b.len,
         &face_a,
@@ -60,29 +72,15 @@ pub fn collideBoxBox(
         &face_a_contact_points,
         &face_b_contact_points,
     ) catch {
-        out.appendAssumeCapacity(.{
-            .body_a = a_id,
-            .body_b = b_id,
-            .normal = penetration_axis.normalize(math.eps_f32),
-            .penetration_depth = epa_result.penetration_depth,
-            .length = 1,
-            .contact_points_a = .{ epa_result.collision_point_a, undefined, undefined, undefined },
-            .contact_points_b = .{ epa_result.collision_point_b, undefined, undefined, undefined },
-        });
+        // Fallback: use EPA result
+        manifold.length = 1;
+        manifold.contact_points_a = .{ epa_result.collision_point_a, undefined, undefined, undefined };
+        manifold.contact_points_b = .{ epa_result.collision_point_b, undefined, undefined, undefined };
+        
+        warmStartManifold(manifold, read_cache, key);
         return;
     };
 
-    out.appendAssumeCapacity(.{
-        .body_a = a_id,
-        .body_b = b_id,
-        .normal = penetration_axis.normalize(math.eps_f32),
-        .penetration_depth = epa_result.penetration_depth,
-        .contact_points_a = undefined,
-        .contact_points_b = undefined,
-        .length = undefined,
-    });
-
-    var manifold: *contact.ContactManifold = &out.items[out.items.len - 1];
     var contact_points_a: []math.Vec3 = &manifold.contact_points_a;
     var contact_points_b: []math.Vec3 = &manifold.contact_points_b;
 
@@ -102,6 +100,32 @@ pub fn collideBoxBox(
             manifold.contact_points_b[i] = face_b_contact_points[i];
         }
         manifold.length = @intCast(manifold_size);
+    }
+    
+    warmStartManifold(manifold, read_cache, key);
+}
+
+fn warmStartManifold(
+    manifold: *contact.ContactManifold, 
+    read_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    key: contact.CacheMainfoldKey
+) void {
+    if (read_cache.get(key)) |cached| {
+        const threshold_sq = 0.05 * 0.05;
+        
+        for (0..manifold.length) |i| {
+            for (0..cached.length) |j| {
+                const dist_sq_a = manifold.contact_points_a[i].dist2(&cached.contact_points_a[j]);
+                const dist_sq_b = manifold.contact_points_b[i].dist2(&cached.contact_points_b[j]);
+                
+                if (dist_sq_a < threshold_sq and dist_sq_b < threshold_sq) {
+                    manifold.accumulated_impulse[i] = cached.accumulated_impulse[j];
+                    manifold.accumulated_impulse_tangent1[i] = cached.accumulated_impulse_tangent1[j];
+                    manifold.accumulated_impulse_tangent2[i] = cached.accumulated_impulse_tangent2[j];
+                    break;
+                }
+            }
+        }
     }
 }
 

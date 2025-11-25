@@ -24,8 +24,10 @@ pub const ContactManifold = contact.ContactManifold;
 // Todo: Add BroadPhase collision check in here
 pub fn generateContacts(
     bodies: std.MultiArrayList(BodyComponents).Slice,
-    contacts_out: *std.ArrayList(Contact),
-    manifolds_out: *std.ArrayList(contact.ContactManifold)
+    read_manifold_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    write_manifold_cache: *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    read_contact_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
+    write_contact_cache: *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
 ) void {
     const transforms = bodies.items(.transform);
     const shapes = bodies.items(.shape);
@@ -40,7 +42,7 @@ pub fn generateContacts(
             if (physics_props[index_a].inverseMass == 0 and physics_props[index_b].inverseMass == 0) continue;
 
             switch (shapes[index_a]) {
-                .Sphere => |_| {
+                .Sphere => |sphere_a| {
                     switch (shapes[index_b]) {
                         .Sphere => |_| collideSphereSphere(
                             @intCast(index_a), 
@@ -49,51 +51,36 @@ pub fn generateContacts(
                             @intCast(index_b), 
                             transforms[index_b], 
                             shapes[index_b],
-                            contacts_out
+                            read_contact_cache,
+                            write_contact_cache
                         ),
-                        .Box => |_| collideSphereBox(
+                        .Box => |box_b| collideSphereBox(
                             @intCast(index_a), 
                             transforms[index_a], 
-                            shapes[index_a],
+                            sphere_a,
                             @intCast(index_b), 
                             transforms[index_b], 
-                            shapes[index_b],
-                            contacts_out
+                            box_b,
+                            read_contact_cache,
+                            write_contact_cache
                         ),
                         else => {},
                     }
                 },
-                .Box => |_| {
+                .Box => |box_a| {
                     switch (shapes[index_b]) {
-                        .Sphere => |_| {
+                        .Sphere => |sphere_b| {
                             // sphere-box expects sphere as A, box as B; swap roles
-                            const previous_len = contacts_out.items.len;
                             collideSphereBox(
                                 @intCast(index_b), 
                                 transforms[index_b], 
-                                shapes[index_b],
+                                sphere_b,
                                 @intCast(index_a), 
                                 transforms[index_a], 
-                                shapes[index_a],
-                                contacts_out
+                                box_a,
+                                read_contact_cache,
+                                write_contact_cache
                             );
-
-                            // If a contact was added, remap to keep ordering A=index_a (box), B=index_b (sphere)
-                            if (contacts_out.items.len > previous_len) {
-                                var contact_ref = &contacts_out.items[contacts_out.items.len - 1];
-
-                                // ensure normal points from A(index_a) to B(index_b)
-                                contact_ref.normal = contact_ref.normal.negate();
-
-                                // set indices to match (index_a -> index_b)
-                                contact_ref.body_a = @intCast(index_a);
-                                contact_ref.body_b = @intCast(index_b);
-
-                                // swap world space contact points to preserve A/B semantics
-                                const tmp = contact_ref.point_a;
-                                contact_ref.point_a = contact_ref.point_b;
-                                contact_ref.point_b = tmp;
-                            }
                         },
                         .Box => |_| collideBoxBox(
                             @intCast(index_a), 
@@ -102,7 +89,8 @@ pub fn generateContacts(
                             @intCast(index_b), 
                             transforms[index_b], 
                             shapes[index_b],
-                            manifolds_out
+                            read_manifold_cache,
+                            write_manifold_cache
                         ),
                         else => {},
                     }
@@ -116,34 +104,85 @@ pub fn generateContacts(
 /// Build penetration constraints from contacts
 pub fn buildPenetrationConstraints(
     bodies: std.MultiArrayList(body_module.BodyComponents).Slice,
-    contacts: []const Contact,
-    manifolds: []const ContactManifold,
-    constraints_out: *std.ArrayList(contact.PenetrationConstraint)
+    manifold_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    contact_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
+    constraints_out: *std.ArrayList(contact.PenetrationConstraint),
 ) void {
-
-    for (contacts) |contact_entry| {
-        const constraint = buildPenetrationConstraint(
+    var contact_iter = contact_cache.iterator();
+    while (contact_iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const contact_entry = entry.value_ptr.*;
+        
+        var constraint = buildPenetrationConstraint(
             bodies,
             contact_entry.point_a,
             contact_entry.point_b,
             contact_entry.normal,
-            contact_entry.body_a,
-            contact_entry.body_b,
+            key.body_a,
+            key.body_b,
         );
+        
+        constraint.accumulated_impulse = contact_entry.accumulated_impulse;
+        constraint.accumulated_impulse_tangent1 = contact_entry.accumulated_impulse_tangent1;
+        constraint.accumulated_impulse_tangent2 = contact_entry.accumulated_impulse_tangent2;
+
         constraints_out.appendAssumeCapacity(constraint);
     }
     
-    for (manifolds) |manifold| {
+    var manifold_iter = manifold_cache.iterator();
+    while (manifold_iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const manifold = entry.value_ptr.*;
+        
         for (0..manifold.length) |i| {
-            const constraint = buildPenetrationConstraint(
+            var constraint = buildPenetrationConstraint(
                 bodies,
                 manifold.contact_points_a[i],
                 manifold.contact_points_b[i],
                 manifold.normal,
-                manifold.body_a,
-                manifold.body_b,
+                key.body_a,
+                key.body_b,
             );
+            
+            constraint.accumulated_impulse = manifold.accumulated_impulse[i];
+            constraint.accumulated_impulse_tangent1 = manifold.accumulated_impulse_tangent1[i];
+            constraint.accumulated_impulse_tangent2 = manifold.accumulated_impulse_tangent2[i];
+
             constraints_out.appendAssumeCapacity(constraint);
+        }
+    }
+}
+
+pub fn updateCacheFromConstraints(
+    manifold_cache: *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    contact_cache: *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
+    constraints: []const contact.PenetrationConstraint,
+) void {
+    var constraint_idx: usize = 0;
+    
+    // Iterate contacts (must match build order)
+    var contact_iter = contact_cache.iterator();
+    while (contact_iter.next()) |entry| {
+        const constraint = constraints[constraint_idx];
+        constraint_idx += 1;
+        
+        entry.value_ptr.accumulated_impulse = constraint.accumulated_impulse;
+        entry.value_ptr.accumulated_impulse_tangent1 = constraint.accumulated_impulse_tangent1;
+        entry.value_ptr.accumulated_impulse_tangent2 = constraint.accumulated_impulse_tangent2;
+    }
+    
+    // Iterate manifolds (must match build order)
+    var manifold_iter = manifold_cache.iterator();
+    while (manifold_iter.next()) |entry| {
+        const manifold = entry.value_ptr;
+        
+        for (0..manifold.length) |i| {
+            const constraint = constraints[constraint_idx];
+            constraint_idx += 1;
+            
+            manifold.accumulated_impulse[i] = constraint.accumulated_impulse;
+            manifold.accumulated_impulse_tangent1[i] = constraint.accumulated_impulse_tangent1;
+            manifold.accumulated_impulse_tangent2[i] = constraint.accumulated_impulse_tangent2;
         }
     }
 }
@@ -248,8 +287,8 @@ inline fn effectiveMass(dir: math.Vec3, inv_mass: f32, inv_inertia_world: math.M
 // Todo: This position solver needs some work
 pub fn solvePosition(
     bodies: std.MultiArrayList(BodyComponents).Slice,
-    contacts: []const Contact,
-    manifolds: []const ContactManifold,
+    manifold_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    contact_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
     iterations: u32
 ) void {
     _ = iterations;
@@ -259,29 +298,37 @@ pub fn solvePosition(
     const transform = bodies.items(.transform);
     const physics_props = bodies.items(.physics_props);
 
-    for (contacts) |contact_entry| {
-        const inv_mass_a = physics_props[contact_entry.body_a].inverseMass;
-        const inv_mass_b = physics_props[contact_entry.body_b].inverseMass;
+    var contact_iter = contact_cache.iterator();
+    while (contact_iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const contact_entry = entry.value_ptr.*;
+        
+        const inv_mass_a = physics_props[key.body_a].inverseMass;
+        const inv_mass_b = physics_props[key.body_b].inverseMass;
         const inv_mass_sum = inv_mass_a + inv_mass_b;
         if (inv_mass_sum == 0) continue;
 
         const correction_magnitude = correction_percent * @max(contact_entry.penetration - penetration_slop, 0.0) / inv_mass_sum;
         const correction = contact_entry.normal.normalize(math.eps_f32).mulScalar(correction_magnitude);
 
-        transform[contact_entry.body_a].position = transform[contact_entry.body_a].position.sub(&correction.mulScalar(inv_mass_a));
-        transform[contact_entry.body_b].position = transform[contact_entry.body_b].position.add(&correction.mulScalar(inv_mass_b));
+        transform[key.body_a].position = transform[key.body_a].position.sub(&correction.mulScalar(inv_mass_a));
+        transform[key.body_b].position = transform[key.body_b].position.add(&correction.mulScalar(inv_mass_b));
     }
 
-    for (manifolds) |manifold| {
-        const inv_mass_a = physics_props[manifold.body_a].inverseMass;
-        const inv_mass_b = physics_props[manifold.body_b].inverseMass;
+    var manifold_iter = manifold_cache.iterator();
+    while (manifold_iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const manifold = entry.value_ptr.*;
+        
+        const inv_mass_a = physics_props[key.body_a].inverseMass;
+        const inv_mass_b = physics_props[key.body_b].inverseMass;
         const inv_mass_sum = inv_mass_a + inv_mass_b;
         if (inv_mass_sum == 0) continue;
 
         const correction_magnitude = correction_percent * @max(manifold.penetration_depth - penetration_slop, 0.0) / inv_mass_sum;
         const correction = manifold.normal.normalize(math.eps_f32).mulScalar(correction_magnitude);
 
-        transform[manifold.body_a].position = transform[manifold.body_a].position.sub(&correction.mulScalar(inv_mass_a));
-        transform[manifold.body_b].position = transform[manifold.body_b].position.add(&correction.mulScalar(inv_mass_b));
+        transform[key.body_a].position = transform[key.body_a].position.sub(&correction.mulScalar(inv_mass_a));
+        transform[key.body_b].position = transform[key.body_b].position.add(&correction.mulScalar(inv_mass_b));
     }
 }

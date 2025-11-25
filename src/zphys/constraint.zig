@@ -109,6 +109,41 @@ pub fn solveConstraints(
     constraints: []  PenetrationConstraint,
     iterations: u32
 ) void {
+    // Warm Start: Apply accumulated impulses from previous frame
+    for (constraints) |*constraint| {
+        const motionA = &motion[constraint.body_a];
+        const motionB = &motion[constraint.body_b];
+
+        // Normal impulse
+        if (constraint.accumulated_impulse != 0) {
+            const impulse_n = constraint.n.mulScalar(constraint.accumulated_impulse);
+            motionA.velocity = motionA.velocity.sub(&impulse_n.mulScalar(constraint.inv_mass_a));
+            motionA.angularVelocity = motionA.angularVelocity.sub(&constraint.inv_inertia_r1_cross_n.mulScalar(constraint.accumulated_impulse));
+            motionB.velocity = motionB.velocity.add(&impulse_n.mulScalar(constraint.inv_mass_b));
+            motionB.angularVelocity = motionB.angularVelocity.add(&constraint.inv_inertia_r2_cross_n.mulScalar(constraint.accumulated_impulse));
+        }
+
+        // Friction impulses
+        const out_tangent1 = constraint.n.getNormalizePerpendicular();
+        const out_tangent2 = constraint.n.cross(&out_tangent1);
+
+        if (constraint.accumulated_impulse_tangent1 != 0) {
+            const impulse_t1 = out_tangent1.mulScalar(constraint.accumulated_impulse_tangent1);
+            motionA.velocity = motionA.velocity.sub(&impulse_t1.mulScalar(constraint.inv_mass_a));
+            motionA.angularVelocity = motionA.angularVelocity.sub(&constraint.inv_inertia_r1_cross_t1.mulScalar(constraint.accumulated_impulse_tangent1));
+            motionB.velocity = motionB.velocity.add(&impulse_t1.mulScalar(constraint.inv_mass_b));
+            motionB.angularVelocity = motionB.angularVelocity.add(&constraint.inv_inertia_r2_cross_t1.mulScalar(constraint.accumulated_impulse_tangent1));
+        }
+
+        if (constraint.accumulated_impulse_tangent2 != 0) {
+            const impulse_t2 = out_tangent2.mulScalar(constraint.accumulated_impulse_tangent2);
+            motionA.velocity = motionA.velocity.sub(&impulse_t2.mulScalar(constraint.inv_mass_a));
+            motionA.angularVelocity = motionA.angularVelocity.sub(&constraint.inv_inertia_r1_cross_t2.mulScalar(constraint.accumulated_impulse_tangent2));
+            motionB.velocity = motionB.velocity.add(&impulse_t2.mulScalar(constraint.inv_mass_b));
+            motionB.angularVelocity = motionB.angularVelocity.add(&constraint.inv_inertia_r2_cross_t2.mulScalar(constraint.accumulated_impulse_tangent2));
+        }
+    }
+
     var iteration: u32 = 0;
     while (iteration < iterations) : (iteration += 1) {
         for (constraints) |*constraint| {

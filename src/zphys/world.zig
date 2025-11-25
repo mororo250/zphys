@@ -80,21 +80,35 @@ pub const World = struct {
     pub fn substep(self: *World, dt: f32) void {
         applyGravity(self, dt);
         self.temp.clear();
+        self.temp.swapCacheBuffers();
         
         collision.generateContacts(
             self.bodies.slice(),
-            &self.temp.contacts,
-            &self.temp.manifolds
+            self.temp.getReadManifoldCache(),
+            self.temp.getWriteManifoldCache(),
+            self.temp.getReadContactCache(),
+            self.temp.getWriteContactCache(),
         );
 
-        collision.buildPenetrationConstraints(self.bodies.slice(), self.temp.contactSlice(), self.temp.manifoldSlice(), &self.temp.penetrationConstraints);
-        constraint.solveConstraints(self.bodies.items(.motion), self.temp.penetrationConstraints.items, 90);
+        collision.buildPenetrationConstraints(
+            self.bodies.slice(),
+            self.temp.getWriteManifoldCache(),
+            self.temp.getWriteContactCache(),
+            &self.temp.penetrationConstraints
+        );
+        constraint.solveConstraints(self.bodies.items(.motion), self.temp.penetrationConstraints.items, 10);
+        
+        collision.updateCacheFromConstraints(
+            self.temp.getWriteManifoldCache(),
+            self.temp.getWriteContactCache(),
+            self.temp.penetrationConstraints.items
+        );
 
         integratePositions(self, dt);
         collision.solvePosition(
             self.bodies.slice(),
-            self.temp.contactSlice(),
-            self.temp.manifoldSlice(),
+            self.temp.getWriteManifoldCache(),
+            self.temp.getWriteContactCache(),
             10
         );
     }
@@ -105,7 +119,7 @@ pub const World = struct {
         
         for (0..self.bodyCount()) |i| {
             // Todo: Separate static and dynamic object into different lists. This way we wont need physcs probs in here
-            if (physics_props[i].inverseMass == 0) continue; // static
+            if (physics_props[i].inverseMass == 0) continue;
             const gravity_delta_velocity = self.gravity.mulScalar(dt);
             motion[i].velocity = motion[i].velocity.add(&gravity_delta_velocity);
         }
@@ -137,48 +151,75 @@ pub const World = struct {
 
 pub const WorldTemp = struct {
     allocator: std.mem.Allocator,
-    contacts: std.ArrayList(contact.Contact),
-    manifolds: std.ArrayList(contact.ContactManifold),
     penetrationConstraints: std.ArrayList(contact.PenetrationConstraint),
+    manifold_cache: [2]std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold),
+    contact_cache: [2]std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
+    current_buffer: BufferIndex,
+
+    pub const BufferIndex = enum(usize) {
+        index0 = 0,
+        index1 = 1,
+
+        pub fn next(self: BufferIndex) BufferIndex {
+            return @enumFromInt(@intFromEnum(self) ^ 1);
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator) WorldTemp {
         return .{
             .allocator = allocator,
-            .contacts = .{},
-            .manifolds = .{},
+            .manifold_cache = .{ .{}, .{} },
+            .contact_cache = .{ .{}, .{} },
+            .current_buffer = .index0,
             .penetrationConstraints= .{},
         };
     }
 
     pub fn deinit(self: *WorldTemp) void {
-        self.contacts.deinit(self.allocator);
-        self.manifolds.deinit(self.allocator);
+        self.manifold_cache[0].deinit(self.allocator);
+        self.manifold_cache[1].deinit(self.allocator);
+        self.contact_cache[0].deinit(self.allocator);
+        self.contact_cache[1].deinit(self.allocator);
         self.penetrationConstraints.deinit(self.allocator);
     }
 
     pub fn clear(self: *WorldTemp) void {
-        self.contacts.clearRetainingCapacity();
-        self.manifolds.clearRetainingCapacity();
         self.penetrationConstraints.clearRetainingCapacity();
     }
 
     pub fn ensureCapacity(self: *WorldTemp, bodies_count: usize) !void {
         if (bodies_count <= 1) return;
         const max_pairs = bodies_count * (bodies_count - 1) / 2;
-        try self.contacts.ensureTotalCapacity(self.allocator, max_pairs);
-        try self.manifolds.ensureTotalCapacity(self.allocator, max_pairs);
-        try self.penetrationConstraints.ensureTotalCapacity(self.allocator, max_pairs * 4); // 4 = max number of manifolders
-    }
-
-    pub fn contactSlice(self: *WorldTemp) []const contact.Contact {
-        return self.contacts.items;
-    }
-
-    pub fn manifoldSlice(self: *WorldTemp) []const contact.ContactManifold {
-        return self.manifolds.items;
+        try self.manifold_cache[0].ensureTotalCapacity(self.allocator, max_pairs);
+        try self.manifold_cache[1].ensureTotalCapacity(self.allocator, max_pairs);
+        try self.contact_cache[0].ensureTotalCapacity(self.allocator, max_pairs);
+        try self.contact_cache[1].ensureTotalCapacity(self.allocator, max_pairs);
+        try self.penetrationConstraints.ensureTotalCapacity(self.allocator, max_pairs * 4);
     }
 
     pub fn penConstraintsSlice(self: *WorldTemp) []const contact.PenetrationConstraint {
         return self.penetrationConstraints.items;
+    }
+
+    pub fn swapCacheBuffers(self: *WorldTemp) void {
+        self.current_buffer = self.current_buffer.next();
+        self.manifold_cache[@intFromEnum(self.current_buffer)].clearRetainingCapacity();
+        self.contact_cache[@intFromEnum(self.current_buffer)].clearRetainingCapacity();
+    }
+
+    pub fn getReadManifoldCache(self: *WorldTemp) *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold) {
+        return &self.manifold_cache[@intFromEnum(self.current_buffer.next())];
+    }
+
+    pub fn getWriteManifoldCache(self: *WorldTemp) *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.ContactManifold) {
+        return &self.manifold_cache[@intFromEnum(self.current_buffer)];
+    }
+
+    pub fn getReadContactCache(self: *WorldTemp) *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact) {
+        return &self.contact_cache[@intFromEnum(self.current_buffer.next())];
+    }
+
+    pub fn getWriteContactCache(self: *WorldTemp) *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact) {
+        return &self.contact_cache[@intFromEnum(self.current_buffer)];
     }
 };

@@ -39,7 +39,7 @@ fn createPyramid(world: *zphys.World) !void {
     _ = try world.createBody(ground);
 
     // Pyramid
-    const stack_height = 10;
+    const stack_height = 30;
     const box_size = 1.0;
     const gap = 0.05;
 

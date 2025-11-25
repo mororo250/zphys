@@ -1,10 +1,10 @@
 const math = @import("math");
 
-const Box = struct { half_extents: math.Vec3 };
+pub const Box = struct { half_extents: math.Vec3 };
 
-const Sphere = struct { radius: f32 };
+pub const Sphere = struct { radius: f32 };
 
-const Line = struct {
+pub const Line = struct {
     point_a: math.Vec3,
     point_b: math.Vec3,
 };

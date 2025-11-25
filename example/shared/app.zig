@@ -12,6 +12,7 @@ pub const App = struct {
     paused: bool = false,
     step_one: bool = false,
     sub_steps: u16 = 1,
+    
     show_ui: bool = true,
 
     pub fn init(title: [:0]const u8) !App {
@@ -96,9 +97,9 @@ pub const App = struct {
 
     pub fn drawScene(self: *App) void {
         self.scene_renderer.drawWorld(&self.world);
-        if (self.show_ui) {
-            DebugRenderer.drawContacts(self.world.temp.contactSlice());
-            DebugRenderer.drawManifolds(self.world.temp.manifoldSlice());
-        }
+        //if (self.show_ui) {
+        //    DebugRenderer.drawContacts(self.world.temp.getReadContactCache().values());
+        //    DebugRenderer.drawManifolds(self.world.temp.getReadManifoldCache().values());
+        //}
     }
 };

@@ -1,22 +1,22 @@
 const std = @import("std");
 const math = @import("math");
 const TransformComp = @import("../body.zig").TransformComp;
-const Shape = @import("shape.zig").Shape;
+const ShapeModule = @import("shape.zig");
+const Sphere = ShapeModule.Sphere;
+const Box = ShapeModule.Box;
 const contact = @import("contact.zig");
 
 // Expects: A is Sphere, B is Box
 pub fn collideSphereBox(
     a_id: u32, 
     transform_a: TransformComp, 
-    shape_a: Shape,
+    sphere: Sphere,
     b_id: u32, 
     transform_b: TransformComp, 
-    shape_b: Shape,
-    out: *std.ArrayList(contact.Contact)
+    box: Box,
+    read_cache: *const std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
+    write_cache: *std.AutoArrayHashMapUnmanaged(contact.CacheMainfoldKey, contact.Contact),
 ) void {
-    const sphere = shape_a.Sphere;
-    const box = shape_b.Box;
-
     const closest = closestPointOnOBB(transform_a.position, transform_b.position, transform_b.orientation, box.half_extents);
     const vector_box_to_sphere = closest.sub(&transform_a.position);
     const distance_squared = vector_box_to_sphere.len2();
@@ -38,14 +38,29 @@ pub fn collideSphereBox(
     const point_a = transform_a.position.add(&normal.mulScalar(sphere.radius));
     const point_b = closest;
 
-    out.appendAssumeCapacity(.{
-        .body_a = a_id,
-        .body_b = b_id,
-        .normal = normal, // from sphere to box
-        .point_a = point_a,
-        .point_b = point_b,
-        .penetration = penetration,
-    });
+    const key = contact.CacheMainfoldKey{ .body_a = a_id, .body_b = b_id };
+    const result = write_cache.getOrPutAssumeCapacity(key);
+    var new_contact = result.value_ptr;
+    
+    new_contact.normal = normal;
+    new_contact.point_a = point_a;
+    new_contact.point_b = point_b;
+    new_contact.penetration = penetration;
+    new_contact.accumulated_impulse = 0;
+    new_contact.accumulated_impulse_tangent1 = 0;
+    new_contact.accumulated_impulse_tangent2 = 0;
+
+    if (read_cache.get(key)) |cached| {
+        const threshold_sq = 0.05 * 0.05;
+        const dist_sq_a = point_a.dist2(&cached.point_a);
+        const dist_sq_b = point_b.dist2(&cached.point_b);
+        
+        if (dist_sq_a < threshold_sq and dist_sq_b < threshold_sq) {
+            new_contact.accumulated_impulse = cached.accumulated_impulse;
+            new_contact.accumulated_impulse_tangent1 = cached.accumulated_impulse_tangent1;
+            new_contact.accumulated_impulse_tangent2 = cached.accumulated_impulse_tangent2;
+        }
+    }
 }
 
 fn closestPointOnOBB(point: math.Vec3, center: math.Vec3, orientation: math.Quat, half_extents: math.Vec3) math.Vec3 {
